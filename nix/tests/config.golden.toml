@@ -1,0 +1,5 @@
+max_depth = 2
+protect_branches = ["main", "release/*"]
+prs = true
+roots = ["~/dev", "~/src"]
+skip = ["third_party"]

@@ -1,0 +1,7 @@
+provider: claude
+model: claude-haiku-5-5
+
+style:
+  product: "a git worktree sweeper"
+
+breaking_bumps_minor: true

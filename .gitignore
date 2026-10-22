@@ -1,0 +1,7 @@
+/bin/
+/dist/
+/result
+/result-*
+cover.out
+/.direnv/
+/completions/
