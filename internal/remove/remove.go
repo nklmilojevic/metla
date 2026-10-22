@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/nklmilojevic/metla/internal/discover"
 	"github.com/nklmilojevic/metla/internal/gitx"
@@ -27,6 +28,10 @@ type Options struct {
 	DeleteBranch bool // delete the branch of a worktree metla proved merged
 	DryRun       bool
 	IgnoreDirty  []string // must match the scan's, for the last-moment check
+
+	// Progress, when set, is called after each worktree with how many are
+	// done. Calls come from worker goroutines but never overlap.
+	Progress func(done, total int, r Result)
 }
 
 // Result is what happened to one worktree.
@@ -41,31 +46,67 @@ type Result struct {
 
 var errChanged = errors.New("has uncommitted changes now; rescan or pass --force")
 
+// parallel is how many repositories are worked on at once. Deleting a
+// worktree is mostly file system work, so a few at a time is faster.
+const parallel = 4
+
 // Worktrees removes each worktree its verdict allows and reports the rest as
-// skipped.
+// skipped. The results are in the order of ws. Repositories are worked on in
+// parallel, the worktrees of one repository one after another, so git never
+// edits the same repository's worktree list twice at once.
 func Worktrees(ctx context.Context, ws []scan.Worktree, opts Options) []Result {
-	out := make([]Result, 0, len(ws))
-	for _, w := range ws {
-		res := Result{Path: w.Path, Branch: w.Branch, Verdict: w.Verdict, Status: Removed}
-		switch {
-		case !w.Removable(opts.Force):
-			res.Status = Skipped
-			res.Error = skipReason(w)
-		case opts.DryRun:
-			res.Status = WouldRemove
-		default:
-			if err := one(ctx, w, opts); err != nil {
-				res.Status, res.Error = Failed, err.Error()
-			} else if opts.DeleteBranch && w.Merged && w.Branch != "" {
-				// -D because a squash-merged tip is not an ancestor of the
-				// base, so -d refuses it; metla proved the merge itself.
-				_, err := gitx.Run(ctx, w.RepoDir, "branch", "-D", w.Branch)
-				res.BranchDeleted = err == nil
-			}
+	out := make([]Result, len(ws))
+	byRepo := map[string][]int{}
+	var order []string
+	for i, w := range ws {
+		if _, ok := byRepo[w.RepoDir]; !ok {
+			order = append(order, w.RepoDir)
 		}
-		out = append(out, res)
+		byRepo[w.RepoDir] = append(byRepo[w.RepoDir], i)
 	}
+	sem := make(chan struct{}, parallel)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	done := 0
+	for _, repo := range order {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			for _, i := range byRepo[repo] {
+				r := removeOne(ctx, ws[i], opts)
+				mu.Lock()
+				out[i] = r
+				done++
+				if opts.Progress != nil {
+					opts.Progress(done, len(ws), r)
+				}
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
 	return out
+}
+
+func removeOne(ctx context.Context, w scan.Worktree, opts Options) Result {
+	res := Result{Path: w.Path, Branch: w.Branch, Verdict: w.Verdict, Status: Removed}
+	switch {
+	case !w.Removable(opts.Force):
+		res.Status = Skipped
+		res.Error = skipReason(w)
+	case opts.DryRun:
+		res.Status = WouldRemove
+	default:
+		if err := one(ctx, w, opts); err != nil {
+			res.Status, res.Error = Failed, err.Error()
+		} else if opts.DeleteBranch && w.Merged && w.Branch != "" {
+			// -D because a squash-merged tip is not an ancestor of the
+			// base, so -d refuses it; metla proved the merge itself.
+			_, err := gitx.Run(ctx, w.RepoDir, "branch", "-D", w.Branch)
+			res.BranchDeleted = err == nil
+		}
+	}
+	return res
 }
 
 func skipReason(w scan.Worktree) string {

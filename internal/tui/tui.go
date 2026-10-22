@@ -19,9 +19,10 @@ import (
 
 // Deps is what the screen needs from the rest of metla.
 type Deps struct {
-	Title  string
-	Load   func() (scan.Report, error)
-	Remove func(ws []scan.Worktree, force, deleteBranch bool) []remove.Result
+	Title string
+	Load  func() (scan.Report, error)
+	// Remove calls progress after each worktree.
+	Remove func(ws []scan.Worktree, force, deleteBranch bool, progress func(done, total int)) []remove.Result
 	Prune  func(repos []scan.Repo) []remove.PruneResult
 	Tilde  func(string) string
 }
@@ -61,6 +62,8 @@ type Model struct {
 	force        bool
 	deleteBranch bool
 	status       string
+	done, total  int // removal progress
+	events       <-chan tea.Msg
 }
 
 // New builds the model; Init starts the first scan.
@@ -77,6 +80,11 @@ type loadedMsg struct {
 }
 
 type removedMsg struct{ results []remove.Result }
+
+type progressMsg struct{ done, total int }
+
+// wait delivers the next message a background removal sends.
+func wait(ch <-chan tea.Msg) tea.Cmd { return func() tea.Msg { return <-ch } }
 
 type prunedMsg struct{ results []remove.PruneResult }
 
@@ -105,6 +113,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.setReport(msg.report)
+	case progressMsg:
+		m.done, m.total = msg.done, msg.total
+		return m, wait(m.events)
 	case removedMsg:
 		m.status = removeSummary(msg.results)
 		m.picked = map[string]bool{}
@@ -134,7 +145,15 @@ func (m *Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if k == "y" {
 			ws := m.selected()
 			m.mode = modeWorking
-			return m, func() tea.Msg { return removedMsg{m.deps.Remove(ws, m.force, m.deleteBranch)} }
+			m.done, m.total = 0, len(ws)
+			ch := make(chan tea.Msg, 1)
+			m.events = ch
+			force, deleteBranch := m.force, m.deleteBranch
+			go func() {
+				results := m.deps.Remove(ws, force, deleteBranch, func(done, total int) { ch <- progressMsg{done, total} })
+				ch <- removedMsg{results}
+			}()
+			return m, wait(ch)
 		}
 		m.mode = modeList
 		return m, nil
@@ -340,7 +359,11 @@ func (m *Model) render() string {
 		b.WriteString("\n\n  scanning…\n")
 		return b.String()
 	case modeWorking:
-		b.WriteString("\n\n  working…\n")
+		if m.total > 0 {
+			fmt.Fprintf(&b, "\n\n  removing %d/%d…\n", m.done, m.total)
+		} else {
+			b.WriteString("\n\n  working…\n")
+		}
 		return b.String()
 	}
 	ws := m.worktrees()

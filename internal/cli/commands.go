@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/BurntSushi/toml"
@@ -270,14 +271,28 @@ merged are deleted.`,
 					return err
 				}
 			}
-			results := remove.Worktrees(ctx, targets, opts)
-			if asJSON {
-				err = writeJSON(a.stdout, map[string]any{resultsKey: results})
-			} else {
-				a.printResults(results)
+			st := a.styles()
+			verb := "removing"
+			if dryRun {
+				verb = "checking"
 			}
-			if err != nil {
-				return err
+			p := a.newProgress(verb, len(targets))
+			opts.Progress = func(done, total int, r remove.Result) {
+				if asJSON {
+					p.step(done, "")
+				} else {
+					p.step(done, resultLine(st, r))
+				}
+			}
+			results := remove.Worktrees(ctx, targets, opts)
+			p.end()
+			if asJSON {
+				if err := writeJSON(a.stdout, map[string]any{resultsKey: results}); err != nil {
+					return err
+				}
+			} else {
+				sayln(a.stdout)
+				sayln(a.stdout, removeSummary(results, p.elapsed()))
 			}
 			for _, r := range results {
 				if r.Status == remove.Failed {
@@ -372,21 +387,32 @@ func (a *app) readYes() error {
 	return ErrAborted
 }
 
-func (a *app) printResults(results []remove.Result) {
-	st := a.styles()
-	for _, r := range results {
-		line := fmt.Sprintf("%-12s %s", r.Status, tilde(r.Path))
-		if r.BranchDeleted {
-			line += st.Muted.Render("  (branch " + r.Branch + " deleted)")
-		}
-		if r.Error != "" {
-			line += st.Muted.Render("  (" + r.Error + ")")
-		}
-		if r.Status == remove.Failed {
-			line = st.Err.Render(line)
-		}
-		sayln(a.stdout, line)
+func resultLine(st style.Styles, r remove.Result) string {
+	line := fmt.Sprintf("%-12s %s", r.Status, tilde(r.Path))
+	if r.BranchDeleted {
+		line += st.Muted.Render("  (branch " + r.Branch + " deleted)")
 	}
+	if r.Error != "" {
+		line += st.Muted.Render("  (" + r.Error + ")")
+	}
+	if r.Status == remove.Failed {
+		line = st.Err.Render(line)
+	}
+	return line
+}
+
+func removeSummary(results []remove.Result, took time.Duration) string {
+	counts := map[string]int{}
+	for _, r := range results {
+		counts[r.Status]++
+	}
+	var parts []string
+	for _, status := range []string{remove.Removed, remove.WouldRemove, remove.Skipped, remove.Failed} {
+		if n := counts[status]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, status))
+		}
+	}
+	return strings.Join(parts, ", ") + fmt.Sprintf(" in %s", took.Round(100*time.Millisecond))
 }
 
 func newPruneCmd(a *app) *cobra.Command {
@@ -460,9 +486,10 @@ func newTUICmd(a *app) *cobra.Command {
 			return tui.Run(ctx, tui.Deps{
 				Title: strings.Join(mapStrings(roots, tilde), ", "),
 				Load:  load,
-				Remove: func(ws []scan.Worktree, force, deleteBranch bool) []remove.Result {
+				Remove: func(ws []scan.Worktree, force, deleteBranch bool, progress func(done, total int)) []remove.Result {
 					return remove.Worktrees(ctx, ws, remove.Options{
 						Force: force, DeleteBranch: deleteBranch, IgnoreDirty: a.cfg.IgnoreDirty,
+						Progress: func(done, total int, _ remove.Result) { progress(done, total) },
 					})
 				},
 				Prune: func(repos []scan.Repo) []remove.PruneResult { return remove.Prune(ctx, repos, false) },

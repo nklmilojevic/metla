@@ -34,7 +34,10 @@ func newModel(f *fake) *Model {
 	m := New(Deps{
 		Title: "~/w",
 		Load:  func() (scan.Report, error) { f.loads++; return report(), nil },
-		Remove: func(ws []scan.Worktree, force, _ bool) []remove.Result {
+		Remove: func(ws []scan.Worktree, force, _ bool, progress func(done, total int)) []remove.Result {
+			for i := range ws {
+				progress(i+1, len(ws))
+			}
 			f.removed = append(f.removed, ws)
 			f.force = append(f.force, force)
 			return []remove.Result{{Status: remove.Removed}}

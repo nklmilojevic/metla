@@ -297,6 +297,49 @@ func say(w io.Writer, a ...any)                 { _, _ = fmt.Fprint(w, a...) }
 func sayf(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 func sayln(w io.Writer, a ...any)               { _, _ = fmt.Fprintln(w, a...) }
 
+// progress prints each finished item as it comes, and on a terminal keeps a
+// "removing 12/54" line under them on stderr.
+type progress struct {
+	a     *app
+	verb  string
+	total int
+	live  bool
+	start time.Time
+}
+
+func (a *app) newProgress(verb string, total int) *progress {
+	p := &progress{a: a, verb: verb, total: total, live: a.tty(a.stderr), start: time.Now()}
+	p.status(0)
+	return p
+}
+
+// step reports that done items are finished; line, when not empty, is
+// printed for the item that just finished.
+func (p *progress) step(done int, line string) {
+	p.clear()
+	if line != "" {
+		sayln(p.a.stdout, line)
+	}
+	if done < p.total {
+		p.status(done)
+	}
+}
+
+func (p *progress) status(done int) {
+	if p.live {
+		sayf(p.a.stderr, "%s %d/%d…", p.verb, done, p.total)
+	}
+}
+
+func (p *progress) clear() {
+	if p.live {
+		say(p.a.stderr, "\r\x1b[2K")
+	}
+}
+
+func (p *progress) end()                   { p.clear() }
+func (p *progress) elapsed() time.Duration { return time.Since(p.start) }
+
 // tilde shortens a path under the home directory for display.
 func tilde(p string) string {
 	home, err := os.UserHomeDir()

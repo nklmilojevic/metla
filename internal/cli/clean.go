@@ -89,30 +89,50 @@ given. rust-analyzer does not count.`,
 					return err
 				}
 			}
-			results := make([]cleanResult, 0, len(targets))
-			failed := false
-			for _, t := range targets {
-				r := cleanResult{Target: t, Status: statusCleaned}
-				switch {
-				case len(t.Busy) > 0 && !force:
-					r.Status = statusSkipped
-					r.Error = fmt.Sprintf("in use by %s (pid %d); pass --force", t.Busy[0].Command, t.Busy[0].PID)
-				case dryRun:
-					r.Status = statusWouldClean
-				default:
-					if err := cargo.Clean(ctx, t); err != nil {
-						r.Status, r.Error = statusFailed, err.Error()
-						failed = true
-					}
-				}
-				results = append(results, r)
+			st := a.styles()
+			var p *progress
+			if !dryRun {
+				p = a.newProgress("cleaning", len(targets))
 			}
-			if asJSON {
+			results := make([]cleanResult, len(targets))
+			sem := make(chan struct{}, 4)
+			var mu sync.Mutex
+			var wg sync.WaitGroup
+			finished := 0
+			for i, t := range targets {
+				wg.Go(func() {
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					r := cleanOne(ctx, t, dryRun, force)
+					mu.Lock()
+					defer mu.Unlock()
+					results[i] = r
+					finished++
+					if p != nil {
+						line := ""
+						if !asJSON {
+							line = cleanLine(st, r)
+						}
+						p.step(finished, line)
+					}
+				})
+			}
+			wg.Wait()
+			failed := false
+			for _, r := range results {
+				failed = failed || r.Status == statusFailed
+			}
+			switch {
+			case asJSON:
 				if err := writeJSON(a.stdout, map[string]any{resultsKey: results}); err != nil {
 					return err
 				}
-			} else {
+			case dryRun:
 				a.printClean(results)
+			default:
+				p.end()
+				sayln(a.stdout)
+				sayf(a.stdout, "freed about %s in %s\n", humanKB(freedKB(results)), p.elapsed().Round(100*time.Millisecond))
 			}
 			if failed {
 				return &ExitError{Code: ExitFailed, Err: fmt.Errorf("cargo clean failed in some projects")}
@@ -133,6 +153,43 @@ given. rust-analyzer does not count.`,
 	_ = cmd.RegisterFlagCompletionFunc("min-size", noFiles)
 	_ = cmd.RegisterFlagCompletionFunc("older-than", completeAges)
 	return cmd
+}
+
+func cleanOne(ctx context.Context, t cargo.Target, dryRun, force bool) cleanResult {
+	r := cleanResult{Target: t, Status: statusCleaned}
+	switch {
+	case len(t.Busy) > 0 && !force:
+		r.Status = statusSkipped
+		r.Error = fmt.Sprintf("in use by %s (pid %d); pass --force", t.Busy[0].Command, t.Busy[0].PID)
+	case dryRun:
+		r.Status = statusWouldClean
+	default:
+		if err := cargo.Clean(ctx, t); err != nil {
+			r.Status, r.Error = statusFailed, err.Error()
+		}
+	}
+	return r
+}
+
+func cleanLine(st style.Styles, r cleanResult) string {
+	line := fmt.Sprintf("%-8s %6s  %s", r.Status, humanKB(r.SizeKB), tilde(r.Dir))
+	if r.Error != "" {
+		line += st.Muted.Render("  (" + r.Error + ")")
+	}
+	if r.Status == statusFailed {
+		line = st.Err.Render(line)
+	}
+	return line
+}
+
+func freedKB(results []cleanResult) int64 {
+	var kb int64
+	for _, r := range results {
+		if r.Status == statusCleaned || r.Status == statusWouldClean {
+			kb += r.SizeKB
+		}
+	}
+	return kb
 }
 
 // worktreesOf lists every worktree of the repositories, main ones included.
@@ -195,22 +252,10 @@ func (a *app) printClean(results []cleanResult) {
 	st := a.styles()
 	rows := make([][]string, 0, 1+len(results))
 	rows = append(rows, []string{"STATUS", "SIZE", "BUILT", "REPO", "PROJECT", ""})
-	var freed int64
 	for _, r := range results {
-		status := r.Status
-		if r.Status == statusFailed {
-			status = st.Err.Render(status)
-		}
-		if r.Status == statusCleaned || r.Status == statusWouldClean {
-			freed += r.SizeKB
-		}
-		rows = append(rows, []string{status, humanKB(r.SizeKB), style.Age(r.AgeDays) + " ago", r.Repo, tilde(r.Dir), st.Muted.Render(r.Error)})
+		rows = append(rows, []string{r.Status, humanKB(r.SizeKB), style.Age(r.AgeDays) + " ago", r.Repo, tilde(r.Dir), st.Muted.Render(r.Error)})
 	}
 	writeTable(a.stdout, rows, st)
-	verb := "freed"
-	if len(results) > 0 && results[0].Status == statusWouldClean {
-		verb = "would free"
-	}
 	sayln(a.stdout)
-	sayf(a.stdout, "%s about %s\n", verb, humanKB(freed))
+	sayf(a.stdout, "would free about %s\n", humanKB(freedKB(results)))
 }

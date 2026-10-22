@@ -124,6 +124,10 @@ func TestRemove(t *testing.T) {
 	if r.code != ExitOK || exists(done) {
 		t.Fatalf("confirmed: exit %d, %s%s", r.code, r.out, r.err)
 	}
+	if !strings.Contains(r.err, "removing 0/1…") || !strings.Contains(r.out, "removed      "+tilde(done)) ||
+		!strings.Contains(r.out, "1 removed in ") {
+		t.Errorf("progress and summary missing:\nstdout %q\nstderr %q", r.out, r.err)
+	}
 }
 
 func TestRemoveByPath(t *testing.T) {
