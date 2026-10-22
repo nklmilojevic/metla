@@ -1,5 +1,5 @@
 name: Setup Nix
-description: Install Nix with flakes enabled and wire up the nkl-nix-config Cachix cache
+description: Install Nix with flakes enabled and wire up the metla Cachix cache
 
 runs:
   using: composite
@@ -16,6 +16,6 @@ runs:
     - name: Setup Cachix
       uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
       with:
-        name: nkl-nix-config
+        name: metla
         authToken: ${{ env.CACHIX_AUTH_TOKEN }}
         skipPush: ${{ env.CACHIX_AUTH_TOKEN == '' }}

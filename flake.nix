@@ -1,6 +1,12 @@
 {
   description = "metla - find finished git worktrees across your repositories and sweep them away";
 
+  # CI pushes every build of main and every release to this cache.
+  nixConfig = {
+    extra-substituters = [ "https://metla.cachix.org" ];
+    extra-trusted-public-keys = [ "metla.cachix.org-1:4lVBWLQvzqfxQn8T3IRb7cRDHel7OoRAWHh//T+xSUU=" ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     home-manager = {
