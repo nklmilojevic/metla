@@ -2,6 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>nklmilojevic/renovate-config",
+    "local>nklmilojevic/renovate-config:go-vendor-hash",
     "helpers:pinGitHubActionDigests"
   ],
   "postUpdateOptions": [
@@ -18,7 +19,7 @@
   },
   "packageRules": [
     {
-      "description": "Go updates land as one weekly PR. The vendor-hash workflow fixes vendorHash in package.nix on it.",
+      "description": "Go updates land as one weekly PR. The go-vendor-hash preset recomputes vendorHash in package.nix in Renovate's own commit.",
       "matchManagers": [
         "gomod"
       ],
